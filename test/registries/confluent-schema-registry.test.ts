@@ -173,7 +173,143 @@ test('supports producing and consuming messages using Confluent Schema Registry 
     deepStrictEqual(messages[1].key, 'key-2')
     deepStrictEqual(structuredClone(messages[0].value), { id: 1, name: 'Alice' })
     deepStrictEqual(structuredClone(messages[1].value), { id: 2, name: 'Bob' })
+
+    deepStrictEqual(messages[0].metadata.schemas, { value: schemaId })
+    deepStrictEqual(messages[1].metadata.schemas, { value: schemaId })
+    strictEqual(typeof messages[0].metadata.consumer?.groupId, 'string')
+    strictEqual(typeof messages[1].metadata.consumer?.groupId, 'string')
+
+    // Ensure per-message metadata objects are not shared
+    messages[0].metadata.schemas!.value = -1
+    deepStrictEqual(messages[1].metadata.schemas, { value: schemaId })
   }
+})
+
+test('exposes key and value schema IDs on consume metadata when both are schema-encoded', async t => {
+  const topic = await createTopic(t, true)
+
+  interface KeyDatum {
+    id: string
+  }
+
+  const producerRegistry = new ConfluentSchemaRegistry<KeyDatum, Datum, string, string>({
+    url: confluentSchemaRegistryUrl
+  })
+  const consumerRegistry = new ConfluentSchemaRegistry<KeyDatum, Datum, string, string>({
+    url: confluentSchemaRegistryUrl
+  })
+
+  const keySubject = createSubject()
+  const valueSubject = createSubject()
+  const keySchemaId = await registerSchema(
+    confluentSchemaRegistryUrl,
+    keySubject,
+    'AVRO',
+    JSON.stringify({
+      type: 'record',
+      name: keySubject,
+      fields: [{ name: 'id', type: 'string' }]
+    })
+  )
+  const valueSchemaId = await registerSchema(
+    confluentSchemaRegistryUrl,
+    valueSubject,
+    'AVRO',
+    JSON.stringify({
+      type: 'record',
+      name: valueSubject,
+      fields: [
+        { name: 'id', type: 'int' },
+        { name: 'name', type: 'string' }
+      ]
+    })
+  )
+
+  const producer = await createProducer(t, { registry: producerRegistry })
+  await producer.send({
+    messages: [
+      {
+        topic,
+        key: { id: 'user-1' },
+        value: { id: 1, name: 'Alice' },
+        metadata: { schemas: { key: keySchemaId, value: valueSchemaId } }
+      }
+    ]
+  })
+
+  const consumer = createConsumer(t, { registry: consumerRegistry })
+  const stream = await consumer.consume({ topics: [topic], maxFetches: 1, mode: MessagesStreamModes.EARLIEST })
+  const messages = []
+  for await (const message of stream) {
+    messages.push(message)
+  }
+
+  deepStrictEqual(structuredClone(messages[0].key), { id: 'user-1' })
+  deepStrictEqual(structuredClone(messages[0].value), { id: 1, name: 'Alice' })
+  deepStrictEqual(messages[0].metadata.schemas, { key: keySchemaId, value: valueSchemaId })
+  strictEqual(typeof messages[0].metadata.consumer?.groupId, 'string')
+})
+
+test('does not set metadata.schemas for non-Confluent payloads', async t => {
+  const topic = await createTopic(t, true)
+
+  const producerRegistry = new ConfluentSchemaRegistry<string, Datum, string, string>({
+    url: confluentSchemaRegistryUrl
+  })
+  const consumerRegistry = new ConfluentSchemaRegistry<string, Datum, string, string>({
+    url: confluentSchemaRegistryUrl
+  })
+
+  const subject = createSubject()
+  const schemaId = await registerSchema(
+    confluentSchemaRegistryUrl,
+    subject,
+    'AVRO',
+    JSON.stringify({
+      type: 'record',
+      name: subject,
+      fields: [
+        { name: 'id', type: 'int' },
+        { name: 'name', type: 'string' }
+      ]
+    })
+  )
+
+  // Schema-encoded message
+  const schemaProducer = await createProducer(t, { registry: producerRegistry })
+  await schemaProducer.send({
+    messages: [{ topic, key: 'schema-key', value: { id: 1, name: 'Alice' }, metadata: { schemas: { value: schemaId } } }]
+  })
+
+  // Unframed JSON (registry value fallback is jsonDeserializer)
+  const plainProducer = await createProducer(t, {
+    serializers: {
+      key: stringSerializer,
+      value (value: object | undefined) {
+        return Buffer.from(JSON.stringify(value))
+      }
+    }
+  })
+  await plainProducer.send({
+    messages: [{ topic, key: 'plain-key', value: { id: 2, name: 'plain' } }]
+  })
+
+  const consumer = createConsumer(t, { registry: consumerRegistry })
+  const stream = await consumer.consume({ topics: [topic], maxFetches: 1, mode: MessagesStreamModes.EARLIEST })
+  const messages = []
+  for await (const message of stream) {
+    messages.push(message)
+  }
+
+  deepStrictEqual(messages[0].key, 'schema-key')
+  deepStrictEqual(structuredClone(messages[0].value), { id: 1, name: 'Alice' })
+  deepStrictEqual(messages[0].metadata.schemas, { value: schemaId })
+  strictEqual(typeof messages[0].metadata.consumer?.groupId, 'string')
+
+  deepStrictEqual(messages[1].key, 'plain-key')
+  deepStrictEqual(structuredClone(messages[1].value), { id: 2, name: 'plain' })
+  strictEqual(messages[1].metadata.schemas, undefined)
+  strictEqual(typeof messages[1].metadata.consumer?.groupId, 'string')
 })
 
 test('supports producing and consuming messages using Confluent Schema Registry and ProtocolBuffers', async t => {
@@ -241,6 +377,9 @@ test('supports producing and consuming messages using Confluent Schema Registry 
     deepStrictEqual(messages[1].key, 'key-2')
     deepStrictEqual(structuredClone(messages[0].value), { id: 1, name: 'Alice' })
     deepStrictEqual(structuredClone(messages[1].value), { id: 2, name: 'Bob' })
+    deepStrictEqual(messages[0].metadata.schemas, { value: schemaId })
+    deepStrictEqual(messages[1].metadata.schemas, { value: schemaId })
+    strictEqual(typeof messages[0].metadata.consumer?.groupId, 'string')
   }
 })
 
@@ -315,6 +454,9 @@ test('supports producing and consuming messages using Confluent Schema Registry 
     deepStrictEqual(messages[1].key, 'key-2')
     deepStrictEqual(structuredClone(messages[0].value), { id: 1, name: 'Alice' })
     deepStrictEqual(structuredClone(messages[1].value), { id: 2, name: 'Bob' })
+    deepStrictEqual(messages[0].metadata.schemas, { value: schemaId })
+    deepStrictEqual(messages[1].metadata.schemas, { value: schemaId })
+    strictEqual(typeof messages[0].metadata.consumer?.groupId, 'string')
   }
 })
 
