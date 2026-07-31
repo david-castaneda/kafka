@@ -951,7 +951,9 @@ export class MessagesStream<Key, Value, HeaderKey, HeaderValue> extends Readable
                 timestamp: firstTimestamp + record.timestampDelta,
                 offset,
                 commit,
-                metadata: messageMetadata,
+                metadata: messageToConsume.metadata
+                  ? { ...messageMetadata, ...(messageToConsume.metadata as Record<string, unknown>) }
+                  : messageMetadata,
                 toJSON: messageToJSON
               } as Message
 

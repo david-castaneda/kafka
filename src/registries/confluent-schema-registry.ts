@@ -34,7 +34,7 @@ const draft06MetaSchema = require('ajv/dist/refs/json-schema-draft-06.json') as 
 type ConfluentSchemaRegistryMessageToProduce = MessageToProduce<unknown, unknown, unknown, unknown>
 
 export interface ConfluentSchemaRegistryMetadata {
-  schemas?: Record<BeforeHookPayloadType, number>
+  schemas?: Partial<Record<BeforeHookPayloadType, number>>
 }
 
 export type ConfluentSchemaRegistryProtobufTypeMapper = (
@@ -141,7 +141,8 @@ export class ConfluentSchemaRegistry<
     }
 
     if (Buffer.isBuffer(message)) {
-      if (type !== 'value') {
+      // Confluent wire format: magic byte 0 + 4-byte big-endian schema ID
+      if (message.length < 5 || message[0] !== 0 || (type !== 'key' && type !== 'value')) {
         return undefined
       }
 
@@ -405,6 +406,12 @@ export class ConfluentSchemaRegistry<
     const schema = this.#schemas.get(schemaId)
     if (!schema) {
       throw new UserError(`Schema with ID ${schemaId} not found.`, { missingSchema: schemaId })
+    }
+
+    if (message) {
+      const metadata = (message.metadata as ConfluentSchemaRegistryMetadata | undefined) ?? (message.metadata = {})
+      const schemas = metadata.schemas ?? (metadata.schemas = {})
+      schemas[type] = schemaId
     }
 
     switch (schema.type) {

@@ -118,6 +118,7 @@ export interface KafkaRecord {
 export interface MessageToConsume extends KafkaRecord {
   topic: string
   partition: number
+  metadata?: unknown // This is used by schema registry
 }
 
 /*
